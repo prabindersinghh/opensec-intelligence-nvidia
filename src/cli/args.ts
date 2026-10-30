@@ -209,6 +209,7 @@ export function printHelp(): void {
     opensec scan [path]          Full pipeline: scan + analyst + consensus
     opensec scan [path] --quick  Deterministic scanner only, fast sweep
     opensec scan [path] --cloud  Cloud models for analyst + consensus
+    opensec scan [path] --provider nebius  Analyst/Consensus/Fixer via NVIDIA Nemotron
     opensec scan --demo          Scan a bundled vulnerable app (instant proof)
     opensec scan ./ --ci         JSON to stdout, exit 1 on CRITICAL (for CI)
 
@@ -220,15 +221,24 @@ export function printHelp(): void {
     opensec prove ./ --show-exploit  Print generated exploit code
 
   ${GREEN('GENERAL')}
-    opensec -m <model>           Set Ollama model
+    opensec -m <model>           Set model (Ollama tag, or Nebius model ID)
+    opensec --provider nebius    Use NVIDIA Nemotron via Nebius Token Factory
     opensec serve                Start HTTP API server
     opensec --help               Show this help
     opensec --version            Show version
 
   ${GREEN('RECOMMENDED MODELS')}
-    qwen2.5-coder:14b            Best for security analysis
-    deepseek-r1:14b              Best for consensus reasoning
-    llama3.2:3b                  Fast scanner (low resource)
+    qwen2.5-coder:14b            Best for security analysis (Ollama, local)
+    deepseek-r1:14b              Best for consensus reasoning (Ollama, local)
+    llama3.2:3b                  Fast scanner (low resource, Ollama)
+    nvidia/nemotron-*            NVIDIA Nemotron via Nebius Token Factory (cloud)
+
+  ${GREEN('NEBIUS / NVIDIA NEMOTRON')}
+    NEBIUS_API_KEY=...           Required — from your Token Factory account
+    NEBIUS_BASE_URL=...          Optional — defaults to the public Token Factory endpoint
+    NEBIUS_MODEL=...             Optional — exact model ID; auto-detected from the
+                                  live catalog (GET /v1/models) when unset
+    OPENSEC_AI_PROVIDER=nebius   Select Nebius for scan/fix/prove without --provider
 
   ${SEP}
   ${GREEN('OpenSec Intelligence')} ${PINK('by Prabinder Singh')}

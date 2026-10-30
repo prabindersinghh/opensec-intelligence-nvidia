@@ -5,14 +5,17 @@
  *   - ollama: Local inference via Ollama (default)
  *   - openai: OpenAI API (also works with Groq, Together, OpenRouter)
  *   - anthropic: Anthropic Claude API
+ *   - nebius: NVIDIA Nemotron models via Nebius Token Factory (OpenAI-compatible)
  *
  * API keys are read from environment variables:
  *   - OPENAI_API_KEY (or CMDR_OPENAI_API_KEY)
  *   - ANTHROPIC_API_KEY (or CMDR_ANTHROPIC_API_KEY)
+ *   - NEBIUS_API_KEY
  *
  * Custom base URLs:
  *   - OPENAI_BASE_URL (e.g. https://openrouter.ai/api/v1)
  *   - ANTHROPIC_BASE_URL
+ *   - NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1)
  */
 
 import type { LLMAdapter } from '../core/types.js'
@@ -20,7 +23,9 @@ import { OllamaAdapter } from './ollama.js'
 import { OpenAIAdapter } from './openai.js'
 import { AnthropicAdapter } from './anthropic.js'
 
-export type ProviderName = 'ollama' | 'openai' | 'anthropic'
+export type ProviderName = 'ollama' | 'openai' | 'anthropic' | 'nebius'
+
+const NEBIUS_DEFAULT_BASE_URL = 'https://api.tokenfactory.nebius.com/v1'
 
 export interface ProviderOptions {
   provider: ProviderName
@@ -69,6 +74,22 @@ export function createAdapter(options: ProviderOptions): LLMAdapter {
       })
     }
 
+    case 'nebius': {
+      const apiKey = options.apiKey ?? process.env.NEBIUS_API_KEY
+      if (!apiKey) {
+        throw new Error(
+          'Nebius API key required. Set the NEBIUS_API_KEY environment variable (from your Token Factory account).',
+        )
+      }
+      // Token Factory speaks the OpenAI-compatible /chat/completions API, so the
+      // existing OpenAIAdapter works as-is — only the base URL and key differ.
+      return new OpenAIAdapter({
+        apiKey,
+        baseUrl: options.baseUrl ?? process.env.NEBIUS_BASE_URL ?? NEBIUS_DEFAULT_BASE_URL,
+        name: 'nebius',
+      })
+    }
+
     default:
       throw new Error(`Unknown provider: ${options.provider}`)
   }
@@ -83,6 +104,8 @@ export function detectProviderFromModel(model: string): ProviderName | undefined
   if (/^claude-/i.test(model)) return 'anthropic'
   // GPT/o1/o3 models → OpenAI
   if (/^(gpt-|o1|o3|chatgpt)/i.test(model)) return 'openai'
+  // Nemotron models → Nebius Token Factory
+  if (/nemotron/i.test(model)) return 'nebius'
   // Models with colons are typically Ollama tags (e.g. qwen2.5-coder:14b)
   if (model.includes(':')) return 'ollama'
 

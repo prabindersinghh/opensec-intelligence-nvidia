@@ -1,12 +1,22 @@
 /**
- * Minimal Ollama client for the security pipeline.
+ * LLM client for the security pipeline — Analyst, Consensus, Fixer, and Prover.
  *
- * Talks to /api/generate directly so the Analyst, Consensus, and Fixer stages
- * stay self-contained and degrade gracefully when Ollama is offline — the
- * Scanner never depends on this module.
+ * Supports two providers:
+ *   - 'ollama' (default): talks to /api/generate directly. Self-contained and
+ *     degrades gracefully when Ollama is offline — the Scanner never depends
+ *     on this module.
+ *   - 'nebius': NVIDIA Nemotron models served through Nebius Token Factory's
+ *     OpenAI-compatible /chat/completions endpoint. Requires NEBIUS_API_KEY.
+ *
+ * Every call site in analyst.ts / consensus.ts / fixer.ts / prover.ts goes
+ * through generate()/generateJson() below and is provider-agnostic.
  */
 
 const DEFAULT_URL = 'http://localhost:11434'
+const DEFAULT_NEBIUS_URL = 'https://api.tokenfactory.nebius.com/v1'
+const NEBIUS_TIMEOUT_MS = 60_000
+const NEBIUS_MAX_RETRIES = 3
+const NEBIUS_MODEL_CATALOG_TIMEOUT_MS = 8_000
 
 /** Ordered preference list for model auto-selection. */
 const PREFERRED_MODELS = [
@@ -19,14 +29,25 @@ const PREFERRED_MODELS = [
   'llama3:8b',
 ]
 
+export type LlmProvider = 'ollama' | 'nebius'
+
 export interface LlmConfig {
+  /** Default 'ollama' for backward compatibility with existing callers. */
+  provider?: LlmProvider
+  /** Ollama: server URL. Nebius: Token Factory base URL (defaults to the public endpoint). */
   baseUrl?: string
+  /** Required for provider: 'nebius'. Never logged. */
+  apiKey?: string
   model: string
 }
 
 export interface OllamaStatus {
   available: boolean
   model: string | null
+}
+
+function providerOf(config: Pick<LlmConfig, 'provider'>): LlmProvider {
+  return config.provider === 'nebius' ? 'nebius' : 'ollama'
 }
 
 /**
@@ -51,6 +72,164 @@ export async function checkOllama(baseUrl = DEFAULT_URL): Promise<OllamaStatus> 
 /** Backward-compat: returns true when Ollama is reachable. */
 export async function ollamaAvailable(baseUrl = DEFAULT_URL): Promise<boolean> {
   return (await checkOllama(baseUrl)).available
+}
+
+// ---------------------------------------------------------------------------
+// Nebius Token Factory (NVIDIA Nemotron)
+// ---------------------------------------------------------------------------
+
+export interface NebiusCheckOptions {
+  apiKey?: string
+  baseUrl?: string
+}
+
+export interface NebiusStatus {
+  available: boolean
+  /** Model IDs reported by GET /v1/models. Empty when unreachable or unauthenticated. */
+  models: string[]
+}
+
+/**
+ * Check Nebius Token Factory reachability and list the model catalog for this
+ * account via GET /v1/models. Never throws — returns `available: false` on
+ * any network, auth, or parsing failure.
+ */
+export async function checkNebius(opts: NebiusCheckOptions = {}): Promise<NebiusStatus> {
+  const apiKey = opts.apiKey ?? process.env.NEBIUS_API_KEY
+  if (!apiKey) return { available: false, models: [] }
+
+  const baseUrl = (opts.baseUrl ?? process.env.NEBIUS_BASE_URL ?? DEFAULT_NEBIUS_URL).replace(/\/$/, '')
+  try {
+    const res = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(NEBIUS_MODEL_CATALOG_TIMEOUT_MS),
+    })
+    if (!res.ok) return { available: false, models: [] }
+    const data = (await res.json()) as { data?: Array<{ id: string }> }
+    return { available: true, models: (data.data ?? []).map((m) => m.id).filter(Boolean) }
+  } catch {
+    return { available: false, models: [] }
+  }
+}
+
+export interface NebiusResolveOptions extends NebiusCheckOptions {
+  /** Explicit model ID (e.g. from NEBIUS_MODEL). Used as-is when set — no catalog lookup. */
+  model?: string
+}
+
+export interface NebiusResolvedModel {
+  model: string
+  source: 'config' | 'catalog'
+}
+
+/**
+ * Resolve the Nebius model to use.
+ *
+ * If `opts.model` is set, it's used directly (the account owner already knows
+ * which model they want). Otherwise this queries the live Token Factory model
+ * catalog (GET /v1/models) and picks the first NVIDIA Nemotron model found.
+ *
+ * Never guesses a model ID — if the catalog can't be reached or contains no
+ * Nemotron model, this throws with an actionable message rather than silently
+ * falling back to a hardcoded ID (which could silently stop being an NVIDIA
+ * model at all).
+ */
+export async function resolveNebiusModel(opts: NebiusResolveOptions): Promise<NebiusResolvedModel> {
+  if (opts.model) return { model: opts.model, source: 'config' }
+
+  const status = await checkNebius(opts)
+  if (!status.available) {
+    throw new Error(
+      'Could not reach the Nebius Token Factory model catalog (GET /v1/models). ' +
+        'Set NEBIUS_MODEL explicitly, or check NEBIUS_API_KEY / NEBIUS_BASE_URL.',
+    )
+  }
+  const nemotron = status.models.find((id) => /nemotron/i.test(id))
+  if (!nemotron) {
+    throw new Error(
+      'No NVIDIA Nemotron model is available in the Token Factory catalog for this account. ' +
+        'Set NEBIUS_MODEL explicitly to the exact model ID from your Token Factory dashboard.',
+    )
+  }
+  return { model: nemotron, source: 'catalog' }
+}
+
+/** Generic availability check — dispatches to the configured provider. */
+export async function isLlmAvailable(config: LlmConfig): Promise<boolean> {
+  if (providerOf(config) === 'nebius') return (await checkNebius(config)).available
+  return ollamaAvailable(config.baseUrl)
+}
+
+function backoff(attempt: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+}
+
+function toRequestError(err: unknown): Error {
+  if (err instanceof Error && err.name === 'TimeoutError') {
+    return new Error('Nebius Token Factory request timed out')
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+/** Single-shot completion via Nebius Token Factory's /chat/completions. */
+async function generateNebius(config: LlmConfig, prompt: string): Promise<string> {
+  const apiKey = config.apiKey ?? process.env.NEBIUS_API_KEY
+  if (!apiKey) {
+    throw new Error('Nebius API key required. Set NEBIUS_API_KEY or pass apiKey in LlmConfig.')
+  }
+  if (!config.model) {
+    throw new Error('Nebius model not configured. Set NEBIUS_MODEL or call resolveNebiusModel() first.')
+  }
+
+  const baseUrl = (config.baseUrl ?? process.env.NEBIUS_BASE_URL ?? DEFAULT_NEBIUS_URL).replace(/\/$/, '')
+  let lastError: Error = new Error('Nebius Token Factory request failed')
+
+  for (let attempt = 0; attempt < NEBIUS_MAX_RETRIES; attempt++) {
+    let res: Response
+    try {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(NEBIUS_TIMEOUT_MS),
+      })
+    } catch (err) {
+      lastError = toRequestError(err)
+      if (attempt < NEBIUS_MAX_RETRIES - 1) {
+        await backoff(attempt)
+        continue
+      }
+      throw lastError
+    }
+
+    if (res.ok) {
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      const content = data.choices?.[0]?.message?.content
+      if (typeof content !== 'string') {
+        throw new Error('Nebius Token Factory response missing choices[0].message.content')
+      }
+      return content
+    }
+
+    const text = await res.text().catch(() => '')
+    lastError = new Error(`Nebius Token Factory error (${res.status}): ${text.slice(0, 300)}`)
+
+    const retryable = res.status === 429 || res.status >= 500
+    if (!retryable || attempt === NEBIUS_MAX_RETRIES - 1) throw lastError
+
+    const retryAfter = Number(res.headers.get('retry-after'))
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** attempt
+    await new Promise((r) => setTimeout(r, delay))
+  }
+
+  throw lastError
 }
 
 /**
@@ -78,8 +257,10 @@ export async function resolveModel(
   }
 }
 
-/** Single-shot completion via /api/generate. Returns the raw text. */
+/** Single-shot completion. Dispatches to the configured provider. Returns the raw text. */
 export async function generate(config: LlmConfig, prompt: string): Promise<string> {
+  if (providerOf(config) === 'nebius') return generateNebius(config, prompt)
+
   const baseUrl = (config.baseUrl ?? DEFAULT_URL).replace(/\/$/, '')
   const res = await fetch(`${baseUrl}/api/generate`, {
     method: 'POST',

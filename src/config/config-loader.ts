@@ -30,7 +30,10 @@ function getEnvOverrides(): Record<string, unknown> {
 
   if (process.env.OPENSEC_MODEL) overrides.defaultModel = process.env.OPENSEC_MODEL
   if (process.env.OPENSEC_OLLAMA_URL) overrides.ollamaUrl = process.env.OPENSEC_OLLAMA_URL
-  if (process.env.OPENSEC_PROVIDER) overrides.defaultProvider = process.env.OPENSEC_PROVIDER
+  // OPENSEC_AI_PROVIDER is the hackathon-edition name; OPENSEC_PROVIDER is kept for compatibility.
+  if (process.env.OPENSEC_AI_PROVIDER || process.env.OPENSEC_PROVIDER) {
+    overrides.defaultProvider = process.env.OPENSEC_AI_PROVIDER ?? process.env.OPENSEC_PROVIDER
+  }
   if (process.env.OPENSEC_MAX_CONCURRENCY) overrides.maxConcurrency = parseInt(process.env.OPENSEC_MAX_CONCURRENCY, 10)
   if (process.env.OPENSEC_MAX_TURNS) overrides.maxTurns = parseInt(process.env.OPENSEC_MAX_TURNS, 10)
   if (process.env.OPENSEC_CONTEXT_BUDGET) overrides.contextBudget = parseInt(process.env.OPENSEC_CONTEXT_BUDGET, 10)

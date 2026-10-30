@@ -23,7 +23,7 @@ import {
   renderLatest,
   writeHtmlReport,
 } from './report.js'
-import { ollamaAvailable, checkOllama, generateJson, type LlmConfig } from './llm.js'
+import { checkOllama, isLlmAvailable, generateJson, type LlmConfig, type LlmProvider } from './llm.js'
 import { tally, type Finding } from './types.js'
 import { prove } from './prover.js'
 import { displayProofResult, displayProveSummary } from './verifier-display.js'
@@ -32,11 +32,31 @@ const PINK = chalk.hex('#FF2D78')
 const GREEN = chalk.hex('#00FF94')
 const DIM = chalk.gray
 
-export interface SecurityScanOptions {
+/** Shared provider fields accepted by every security CLI command. */
+export interface LlmProviderOptions {
+  provider?: LlmProvider
+  ollamaUrl?: string
+  /** Nebius Token Factory base URL. Ignored for provider: 'ollama'. */
+  baseUrl?: string
+  /** Nebius API key. Ignored for provider: 'ollama'. Never logged. */
+  apiKey?: string
+}
+
+function toLlmConfig(model: string, opts: LlmProviderOptions): LlmConfig {
+  const provider = opts.provider === 'nebius' ? 'nebius' : 'ollama'
+  return provider === 'nebius'
+    ? { provider, model, baseUrl: opts.baseUrl, apiKey: opts.apiKey }
+    : { provider, model, baseUrl: opts.ollamaUrl }
+}
+
+function providerLabel(provider: LlmProvider | undefined): string {
+  return provider === 'nebius' ? 'Nebius Token Factory' : 'Ollama'
+}
+
+export interface SecurityScanOptions extends LlmProviderOptions {
   targetPath: string
   version: string
   model: string
-  ollamaUrl?: string
   quick?: boolean
   cloud?: boolean
   /** CI mode: JSON to stdout, no banner/colors, exit 1 on CRITICAL. */
@@ -56,11 +76,11 @@ export async function securityScan(opts: SecurityScanOptions): Promise<number> {
     return 1
   }
 
-  const llm: LlmConfig = { baseUrl: opts.ollamaUrl, model: opts.model }
+  const llm = toLlmConfig(opts.model, opts)
   const machineOutput = Boolean(opts.ci || opts.json)
 
   if (!machineOutput) {
-    console.log(renderBanner(opts.version, opts.model))
+    console.log(renderBanner(opts.version, opts.model, opts.provider))
     console.log(`\n  ${chalk.bold('SCANNING')}  ${opts.targetPath}`)
     console.log(DIM('  ' + '─'.repeat(40)))
   }
@@ -98,7 +118,7 @@ export async function securityScan(opts: SecurityScanOptions): Promise<number> {
   console.log('\n  ' + renderSummaryLine(result.findings))
   console.log(
     `  ${DIM('Scanned')} ${result.filesScanned} ${DIM('files in')} ${(result.durationMs / 1000).toFixed(1)}s` +
-      `${result.llmUsed ? GREEN('  ✓ LLM-validated') : DIM('  (deterministic only — Ollama offline)')}`,
+      `${result.llmUsed ? GREEN(`  ✓ ${providerLabel(opts.provider)}-validated`) : DIM(`  (deterministic only — ${providerLabel(opts.provider)} offline)`)}`,
   )
   console.log(`  ${DIM('Findings saved to')} .opensec/last-scan.json`)
   if (tally(result.findings).CRITICAL + tally(result.findings).HIGH > 0) {
@@ -110,15 +130,18 @@ export async function securityScan(opts: SecurityScanOptions): Promise<number> {
 }
 
 /** `opensec fix` */
-export async function securityFix(opts: { targetPath: string; model: string; ollamaUrl?: string }): Promise<number> {
+export async function securityFix(opts: LlmProviderOptions & { targetPath: string; model: string }): Promise<number> {
   const scan = await loadLastScan(opts.targetPath)
   if (!scan) {
     console.log(renderError('No scan found. Run `opensec scan ./` first.'))
     return 1
   }
-  const llm: LlmConfig = { baseUrl: opts.ollamaUrl, model: opts.model }
-  if (!(await ollamaAvailable(opts.ollamaUrl))) {
-    console.log(renderError('Ollama is not reachable — the Fixer needs a model to synthesize patches.\n  Start it with: ollama serve'))
+  const llm = toLlmConfig(opts.model, opts)
+  if (!(await isLlmAvailable(llm))) {
+    const hint = opts.provider === 'nebius'
+      ? 'Check NEBIUS_API_KEY and NEBIUS_BASE_URL.'
+      : 'Start it with: ollama serve'
+    console.log(renderError(`${providerLabel(opts.provider)} is not reachable — the Fixer needs a model to synthesize patches.\n  ${hint}`))
     return 1
   }
 
@@ -163,16 +186,17 @@ async function copyDir(src: string, dest: string): Promise<void> {
 }
 
 /** `opensec scan --demo` */
-export async function securityDemo(opts: { version: string; model: string; ollamaUrl?: string }): Promise<number> {
+export async function securityDemo(opts: LlmProviderOptions & { version: string; model: string }): Promise<number> {
   const demoSrc = path.join(packageRoot(), 'demo', 'vulnerable-app')
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'opensec-demo-'))
   await copyDir(demoSrc, work)
 
-  console.log(renderBanner(opts.version, opts.model))
+  console.log(renderBanner(opts.version, opts.model, opts.provider))
   console.log(`\n  ${chalk.bold('DEMO MODE')} ${DIM('— scanning a bundled intentionally-vulnerable app')}\n`)
+  console.log(`  ${DIM('Provider:')} ${providerLabel(opts.provider)}${opts.provider === 'nebius' ? DIM(' (NVIDIA Nemotron via Token Factory)') : ''}\n`)
 
   const start = Date.now()
-  const llm: LlmConfig = { baseUrl: opts.ollamaUrl, model: opts.model }
+  const llm = toLlmConfig(opts.model, opts)
   const result = await runPipeline({
     targetPath: work,
     version: opts.version,
@@ -243,7 +267,7 @@ export async function securityDemo(opts: { version: string; model: string; ollam
 }
 
 // ---------------------------------------------------------------------------
-// --validate-llm — end-to-end smoke test of the Ollama pipeline
+// --validate-llm — end-to-end smoke test of the configured LLM pipeline
 // ---------------------------------------------------------------------------
 
 interface SmokeCase {
@@ -274,15 +298,28 @@ const SMOKE_CASES: SmokeCase[] = [
   },
 ]
 
-export async function validateLlmPipeline(opts: { model: string; ollamaUrl?: string }): Promise<number> {
-  const status = await checkOllama(opts.ollamaUrl)
-  if (!status.available) {
-    console.log(renderError('Ollama is not reachable. Start it with: ollama serve'))
-    return 1
+export async function validateLlmPipeline(opts: LlmProviderOptions & { model: string }): Promise<number> {
+  const provider = opts.provider === 'nebius' ? 'nebius' : 'ollama'
+  let model = opts.model
+
+  if (provider === 'nebius') {
+    const available = await isLlmAvailable(toLlmConfig(model || '', opts))
+    if (!available) {
+      console.log(renderError(`${providerLabel(provider)} is not reachable. Check NEBIUS_API_KEY and NEBIUS_BASE_URL.`))
+      return 1
+    }
+    model = model || 'nemotron'
+  } else {
+    const status = await checkOllama(opts.ollamaUrl)
+    if (!status.available) {
+      console.log(renderError('Ollama is not reachable. Start it with: ollama serve'))
+      return 1
+    }
+    model = model || status.model || 'llama3.2:3b'
   }
-  const model = opts.model || status.model || 'llama3.2:3b'
-  const llm: LlmConfig = { baseUrl: opts.ollamaUrl, model }
-  console.log(`\n  ${chalk.bold('LLM VALIDATION')}  model: ${GREEN(model)}\n`)
+
+  const llm = toLlmConfig(model, opts)
+  console.log(`\n  ${chalk.bold('LLM VALIDATION')}  provider: ${GREEN(providerLabel(provider))}  model: ${GREEN(model)}\n`)
 
   let passed = 0
   for (const c of SMOKE_CASES) {
@@ -306,23 +343,32 @@ export async function validateLlmPipeline(opts: { model: string; ollamaUrl?: str
 }
 
 /** `opensec prove [path]` */
-export async function securityProve(opts: {
+export async function securityProve(opts: LlmProviderOptions & {
   targetPath: string
   model: string
-  ollamaUrl?: string
   showExploit?: boolean
   dryRun?: boolean
 }): Promise<number> {
   if (opts.showExploit) process.env.OPENSEC_SHOW_EXPLOIT = '1'
 
-  const status = await checkOllama(opts.ollamaUrl)
-  if (!status.available) {
-    console.log(renderError('opensec prove requires Ollama.\n  Start with: ollama serve'))
-    return 1
+  const provider = opts.provider === 'nebius' ? 'nebius' : 'ollama'
+  let model = opts.model
+
+  if (provider === 'nebius') {
+    if (!(await isLlmAvailable(toLlmConfig(model || '', opts)))) {
+      console.log(renderError('opensec prove requires Nebius Token Factory.\n  Check NEBIUS_API_KEY and NEBIUS_BASE_URL.'))
+      return 1
+    }
+  } else {
+    const status = await checkOllama(opts.ollamaUrl)
+    if (!status.available) {
+      console.log(renderError('opensec prove requires Ollama.\n  Start with: ollama serve'))
+      return 1
+    }
+    model = model || status.model || 'llama3.2:3b'
   }
 
-  const model = opts.model || status.model || 'llama3.2:3b'
-  console.log(`\n  ${chalk.bold('OPENSEC PROVE')}  ${DIM('model:')} ${GREEN(model)}\n`)
+  console.log(`\n  ${chalk.bold('OPENSEC PROVE')}  ${DIM('provider:')} ${GREEN(providerLabel(provider))}  ${DIM('model:')} ${GREEN(model)}\n`)
 
   const scan = await loadLastScan(opts.targetPath)
   let findings = scan?.findings ?? []
@@ -343,7 +389,7 @@ export async function securityProve(opts: {
 
   console.log(chalk.bold(`  Proving ${targets.length} HIGH/CRITICAL finding(s)…\n`))
 
-  const llm: LlmConfig = { baseUrl: opts.ollamaUrl, model }
+  const llm = toLlmConfig(model, opts)
   const results = []
   const proofsDir = path.join(opts.targetPath, '.opensec', 'proofs')
   await fs.mkdir(proofsDir, { recursive: true })

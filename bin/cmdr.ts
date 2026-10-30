@@ -238,44 +238,71 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------------------
   // Security pipeline subcommands: scan / fix / report / --demo.
-  // These run the deterministic engine and do NOT require Ollama to be running
-  // (the LLM stages are layered on top and degrade gracefully when offline).
+  // These run the deterministic engine and do NOT require an LLM provider to be
+  // reachable (the LLM stages — Ollama or Nebius Token Factory — are layered on
+  // top and degrade gracefully when offline).
   // ---------------------------------------------------------------------------
   if (args.scanPath !== undefined || args.fix || args.report || args.validateLlm || args.prove !== undefined) {
     const { resolve } = await import('path')
     const { securityScan, securityFix, securityReport, securityDemo, validateLlmPipeline, securityProve } = await import('../src/security/cli.js')
-    const { resolveModel } = await import('../src/security/llm.js')
-    const preferredModel = args.model ?? process.env.OPENSEC_MODEL ?? process.env.CMDR_MODEL ?? 'qwen2.5-coder:14b'
+    const { resolveModel, resolveNebiusModel } = await import('../src/security/llm.js')
 
-    // Resolve to an actually-installed model; warn if falling back.
-    const { model: secModel, fallback } = await resolveModel(preferredModel, ollamaUrl)
-    if (fallback) {
-      process.stderr.write(`  Model ${preferredModel} not installed — using ${secModel}\n`)
+    // Provider selection for the security pipeline (Analyst/Consensus/Fixer/Prover):
+    // explicit --provider wins, then OPENSEC_AI_PROVIDER (hackathon name), then the
+    // existing OPENSEC_PROVIDER convention used by the general agent/REPL layer.
+    const secProviderRaw = args.provider ?? process.env.OPENSEC_AI_PROVIDER ?? process.env.OPENSEC_PROVIDER ?? 'ollama'
+    const secProvider: 'ollama' | 'nebius' = secProviderRaw.toLowerCase() === 'nebius' ? 'nebius' : 'ollama'
+    const nebiusApiKey = process.env.NEBIUS_API_KEY
+    const nebiusBaseUrl = process.env.NEBIUS_BASE_URL
+    const nebiusModel = args.model ?? process.env.NEBIUS_MODEL
+
+    let secModel: string
+    if (secProvider === 'nebius') {
+      try {
+        const resolved = await resolveNebiusModel({ model: nebiusModel, apiKey: nebiusApiKey, baseUrl: nebiusBaseUrl })
+        secModel = resolved.model
+        if (resolved.source === 'catalog') {
+          process.stderr.write(`  No NEBIUS_MODEL set — selected ${secModel} from the Token Factory catalog\n`)
+        }
+      } catch (err) {
+        console.error(renderError(err instanceof Error ? err.message : String(err)))
+        process.exit(1)
+      }
+    } else {
+      const preferredModel = args.model ?? process.env.OPENSEC_MODEL ?? process.env.CMDR_MODEL ?? 'qwen2.5-coder:14b'
+      // Resolve to an actually-installed model; warn if falling back.
+      const { model, fallback } = await resolveModel(preferredModel, ollamaUrl)
+      secModel = model
+      if (fallback) {
+        process.stderr.write(`  Model ${preferredModel} not installed — using ${secModel}\n`)
+      }
     }
 
     // --cloud hint (cloud analyst/consensus would need a provider key).
-    if (args.scanCloud && !(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY)) {
-      console.log(`  ${DIM('--cloud set but no ANTHROPIC_API_KEY/OPENAI_API_KEY — using local Ollama.')}`)
+    if (args.scanCloud && secProvider === 'ollama' && !(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || nebiusApiKey)) {
+      console.log(`  ${DIM('--cloud set but no NEBIUS_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY — using local Ollama.')}`)
     }
+
+    const secLlm = { provider: secProvider, ollamaUrl, baseUrl: nebiusBaseUrl, apiKey: nebiusApiKey }
 
     try {
       if (args.validateLlm) {
-        process.exit(await validateLlmPipeline({ model: secModel, ollamaUrl }))
+        process.exit(await validateLlmPipeline({ model: secModel, ...secLlm }))
       }
       if (args.prove !== undefined) {
         process.exit(await securityProve({
           targetPath: resolve(args.prove),
           model: secModel,
-          ollamaUrl,
+          ...secLlm,
           showExploit: args.showExploit,
           dryRun: args.proveDryRun,
         }))
       }
       if (args.scanDemo) {
-        process.exit(await securityDemo({ version: VERSION, model: secModel, ollamaUrl }))
+        process.exit(await securityDemo({ version: VERSION, model: secModel, ...secLlm }))
       }
       if (args.fix) {
-        process.exit(await securityFix({ targetPath: process.cwd(), model: secModel, ollamaUrl }))
+        process.exit(await securityFix({ targetPath: process.cwd(), model: secModel, ...secLlm }))
       }
       if (args.report) {
         process.exit(await securityReport({ targetPath: process.cwd() }))
@@ -285,7 +312,7 @@ async function main(): Promise<void> {
         targetPath,
         version: VERSION,
         model: secModel,
-        ollamaUrl,
+        ...secLlm,
         quick: args.scanQuick,
         cloud: args.scanCloud,
         ci: args.scanCi,

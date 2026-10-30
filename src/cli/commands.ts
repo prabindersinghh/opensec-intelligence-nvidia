@@ -422,7 +422,8 @@ registerCommand({
         `  ${DIM('  User:')}    ~/.opensec/config.toml`,
         `  ${DIM('  Project:')} .opensec.toml`,
         '',
-        `  ${DIM('Env vars: OPENSEC_MODEL, OPENSEC_OLLAMA_URL, OPENSEC_PROVIDER')}`,
+        `  ${DIM('Env vars: OPENSEC_MODEL, OPENSEC_OLLAMA_URL, OPENSEC_AI_PROVIDER')}`,
+        `  ${DIM('Nebius:   NEBIUS_API_KEY, NEBIUS_BASE_URL, NEBIUS_MODEL')}`,
         '',
       ]
       return lines.join('\n')

@@ -2,14 +2,15 @@
  * Pipeline orchestrator — runs Scanner → (Analyst → Consensus) and persists.
  *
  * Detection (Scanner) always runs. The LLM stages run only when requested and
- * when Ollama is reachable; otherwise the deterministic result stands.
+ * when the configured provider (Ollama or Nebius Token Factory) is reachable;
+ * otherwise the deterministic result stands.
  */
 
 import { runScanner } from './scanner.js'
 import { runAnalyst } from './analyst.js'
 import { runConsensus } from './consensus.js'
 import { persistScan } from './scanner.js'
-import { ollamaAvailable, type LlmConfig } from './llm.js'
+import { isLlmAvailable, type LlmConfig } from './llm.js'
 import type { Finding, ScanResult } from './types.js'
 
 export interface PipelineOptions {
@@ -42,7 +43,7 @@ export async function runPipeline(opts: PipelineOptions): Promise<PipelineResult
   let llmUsed = false
 
   if (!opts.quick) {
-    const available = await ollamaAvailable(opts.llm.baseUrl)
+    const available = await isLlmAvailable(opts.llm)
     if (available) {
       opts.onStage?.('analyst', 'confirming HIGH/CRITICAL findings')
       findings = await runAnalyst(findings, { targetPath: opts.targetPath, llm: opts.llm })

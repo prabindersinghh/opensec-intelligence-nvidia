@@ -37,10 +37,12 @@ Node.js `http.createServer` exposing REST and SSE endpoints. Creates a fresh Age
 - **IndexManager** — File discovery, 80-line chunking, Ollama embeddings (nomic-embed-text), cosine similarity search, JSON index storage
 
 ### LLM Adapters (`src/llm/`)
-Three adapters implementing the `LLMAdapter` interface with `chat()` and `stream()` returning `AsyncIterable<StreamEvent>`:
+Three adapter classes implementing the `LLMAdapter` interface with `chat()` and `stream()` returning `AsyncIterable<StreamEvent>`:
 - **OllamaAdapter** — Local inference via Ollama API
-- **OpenAIAdapter** — OpenAI-compatible APIs
+- **OpenAIAdapter** — OpenAI-compatible APIs (OpenAI, OpenRouter, Groq, Together, **and Nebius Token Factory**)
 - **AnthropicAdapter** — Anthropic Messages API
+
+`provider-factory.ts` adds a fourth *provider* on top of these three adapters: `'nebius'`, which constructs an `OpenAIAdapter` pointed at Nebius Token Factory's base URL (`NEBIUS_BASE_URL`, defaulting to the public endpoint) with `NEBIUS_API_KEY` — no new adapter class was needed since Token Factory speaks the same OpenAI-compatible API shape. See [NVIDIA Nemotron × Nebius Token Factory Integration](../README.md#nvidia-nemotron--nebius-token-factory-integration) in the README and [`docs/NEBIUS_NVIDIA_INTEGRATION.md`](NEBIUS_NVIDIA_INTEGRATION.md) for the full integration. The independent security pipeline (`src/security/llm.ts`, used by the Analyst/Consensus/Fixer/Prover) has its own minimal Nebius client for the same reason it has its own minimal Ollama client — see that doc.
 
 All adapters support vision (image blocks) and effort-level configuration.
 

@@ -31,7 +31,7 @@ const SEV_DOT: Record<Severity, string> = {
   LOW: '⚪',
 }
 
-export function renderBanner(version: string, model: string): string {
+export function renderBanner(version: string, model: string, provider?: 'ollama' | 'nebius'): string {
   const W = 62
   const logo = [
     ' ██████╗ ██████╗ ███████╗███╗   ██╗███████╗███████╗ ██████╗',
@@ -44,7 +44,8 @@ export function renderBanner(version: string, model: string): string {
   }
   const top = PINK('╔' + '═'.repeat(W) + '╗')
   const bot = PINK('╚' + '═'.repeat(W) + '╝')
-  const title = `  ${chalk.white.bold('OPENSEC INTELLIGENCE')}  ${DIM('v' + version)}   ${DIM('local · ' + model)}`
+  const providerTag = provider === 'nebius' ? 'nebius · nemotron' : 'local'
+  const title = `  ${chalk.white.bold('OPENSEC INTELLIGENCE')}  ${DIM('v' + version)}   ${DIM(providerTag + ' · ' + model)}`
   return [top, ...logo.map((l) => row('  ' + GREEN(l))), row(title), bot].join('\n')
 }
 

@@ -34,6 +34,12 @@ enabled = false      # opt-in local-only usage stats
 |----------|---------|-------------|
 | `CMDR_MODEL` | `qwen2.5-coder:14b` | Default model |
 | `CMDR_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `OPENSEC_AI_PROVIDER` | `ollama` | `ollama` or `nebius` — selects the provider for `opensec scan`/`fix`/`prove` |
+| `NEBIUS_API_KEY` | — | Required for `OPENSEC_AI_PROVIDER=nebius` / `--provider nebius` |
+| `NEBIUS_BASE_URL` | `https://api.tokenfactory.nebius.com/v1/` | Nebius Token Factory base URL |
+| `NEBIUS_MODEL` | — | Exact NVIDIA Nemotron model ID; auto-detected from the live catalog when unset |
+
+See [NVIDIA Nemotron × Nebius Token Factory Integration](../README.md#nvidia-nemotron--nebius-token-factory-integration) in the README for the full walkthrough.
 
 ## Permission Modes
 
