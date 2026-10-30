@@ -20,7 +20,7 @@
 [![Powered by Ollama](https://img.shields.io/badge/runs%20on-Ollama-blue?style=flat-square)](https://ollama.com)
 [![NVIDIA Nemotron on Nebius](https://img.shields.io/badge/cloud-NVIDIA%20Nemotron%20on%20Nebius-76B900?style=flat-square)](https://tokenfactory.nebius.com)
 [![Tests](https://img.shields.io/badge/tests-182%20passing-00FF94?style=flat-square)](#)
-[![Built by Prabinder Singh](https://img.shields.io/badge/built%20by-Prabinder%20Singh-FF2D78?style=flat-square)](https://github.com/prabindersinghh)
+[![Built by Prabinder Singh & Anish Grover](https://img.shields.io/badge/built%20by-Prabinder%20Singh-FF2D78?style=flat-square)](https://github.com/prabindersinghh)
 
 <br/>
 
